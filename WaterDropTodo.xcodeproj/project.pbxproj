@@ -34,11 +34,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		D0C500000000000000000001 /* docs */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = docs;
-			sourceTree = "<group>";
-		};
 		E1C8C65930356D37002D5D7A /* WaterDropTodo */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = WaterDropTodo;
@@ -85,7 +80,6 @@
 		E1C8C64E30356D37002D5D7A = {
 			isa = PBXGroup;
 			children = (
-				D0C500000000000000000001 /* docs */,
 				E1C8C65930356D37002D5D7A /* WaterDropTodo */,
 				E1E0B1463035A1100059D1F2 /* WaterDropTodoTests */,
 				E1E0B1533035A15F0059D1F2 /* WaterDropTodoUITests */,

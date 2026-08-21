@@ -40,7 +40,7 @@ jq -e '
 ' "$package_lock" >/dev/null || fail "KeyboardShortcuts must be the only dependency at exactly 3.0.1"
 
 if rg -n --hidden --glob '!scripts/check_release_hygiene.sh' \
-    --glob '!docs/**' --glob '!.git/**' \
+    --glob '!.git/**' \
     '(BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|notarytool.*(--password|--apple-id)|AC_PASSWORD=|APPLE_ID_PASSWORD=)' .; then
     fail "possible signing/notary secret found"
 fi

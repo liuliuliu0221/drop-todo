@@ -100,8 +100,7 @@ fi
 ditto "$source_app" "$staging_path/$app_name"
 
 ln -s /Applications "$staging_path/Applications"
-cp "$repo_root/docs/隐私说明.md" "$staging_path/隐私说明.md"
-cp "$repo_root/docs/mvp/M4C_内测说明.md" "$staging_path/内测说明.md"
+cp "$repo_root/README.md" "$staging_path/README.md"
 
 M4C_VERIFY_OUTPUT_DIR="$verification_path/staged-app" \
     "$repo_root/scripts/m4c_verify_app.sh" \

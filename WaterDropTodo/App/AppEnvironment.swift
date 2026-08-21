@@ -11,62 +11,59 @@ final class AppEnvironment: ObservableObject {
     @Published private(set) var activeTasks: [TaskRecord] = []
     @Published private(set) var completedTasks: [TaskRecord] = []
     @Published private(set) var ruinedTasks: [TaskRecord] = []
+    @Published private(set) var gardenSnapshot = GardenSnapshot.empty
     @Published private(set) var taskStoreReady = false
     @Published private(set) var taskErrorMessage: String?
-    @Published private(set) var aquariumIsVisible = true
-    @Published private(set) var aquariumIsAdjusting = false
     @Published private(set) var hideInFullscreen: Bool
 
     var onRequestQuickCapture: (() -> Void)?
     var onRequestSettings: (() -> Void)?
-    var onRequestToggleAquarium: (() -> Void)?
-    var onRequestToggleAquariumAdjustment: (() -> Void)?
-    var onAquariumImpact: ((Bool) -> Void)?
-
     private let windowCoordinator: WindowCoordinator
     private let taskService: TaskService
+    private let gardenService: GardenService
     private lazy var timeEngine = TimeEngine(service: taskService)
     private var hasStartedTasks = false
+    private var gardenServiceReady = false
 
     init(
         taskService: TaskService? = nil,
+        gardenService: GardenService? = nil,
         applicationSupportURL: URL? = nil
     ) {
         let hideInFullscreen = UserDefaults.standard.object(forKey: "display.hideInFullscreen") as? Bool ?? true
         self.hideInFullscreen = hideInFullscreen
         self.windowCoordinator = WindowCoordinator()
 
-        if let taskService {
-            self.taskService = taskService
+        let directory: URL
+        let arguments = ProcessInfo.processInfo.arguments
+        if let applicationSupportURL {
+            directory = applicationSupportURL
+        } else if let benchmarkStoreName = arguments
+            .first(where: { $0.hasPrefix("--m4-benchmark-store-name=") })?
+            .replacingOccurrences(of: "--m4-benchmark-store-name=", with: ""),
+            !benchmarkStoreName.isEmpty {
+            directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+                benchmarkStoreName,
+                isDirectory: true
+            )
+        } else if arguments.contains("--ui-testing") {
+            let storeName = arguments
+                .first { $0.hasPrefix("--ui-testing-store=") }?
+                .replacingOccurrences(of: "--ui-testing-store=", with: "")
+                ?? "WaterDropTodo-UITests-\(ProcessInfo.processInfo.processIdentifier)"
+            directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+                storeName,
+                isDirectory: true
+            )
         } else {
-            let directory: URL
-            let arguments = ProcessInfo.processInfo.arguments
-            if let applicationSupportURL {
-                directory = applicationSupportURL
-            } else if let benchmarkStoreName = arguments
-                .first(where: { $0.hasPrefix("--m4-benchmark-store-name=") })?
-                .replacingOccurrences(of: "--m4-benchmark-store-name=", with: ""),
-                !benchmarkStoreName.isEmpty {
-                directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-                    benchmarkStoreName,
-                    isDirectory: true
-                )
-            } else if arguments.contains("--ui-testing") {
-                let storeName = arguments
-                    .first { $0.hasPrefix("--ui-testing-store=") }?
-                    .replacingOccurrences(of: "--ui-testing-store=", with: "")
-                    ?? "WaterDropTodo-UITests-\(ProcessInfo.processInfo.processIdentifier)"
-                directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-                    storeName,
-                    isDirectory: true
-                )
-            } else {
-                directory = (try? TaskStore.applicationSupportDirectory())
-                    ?? FileManager.default.temporaryDirectory
-                        .appendingPathComponent("WaterDropTodo-Recovery", isDirectory: true)
-            }
-            self.taskService = TaskService(store: TaskStore(directoryURL: directory))
+            directory = (try? TaskStore.applicationSupportDirectory())
+                ?? FileManager.default.temporaryDirectory
+                    .appendingPathComponent("WaterDropTodo-Recovery", isDirectory: true)
         }
+        self.taskService = taskService ?? TaskService(store: TaskStore(directoryURL: directory))
+        self.gardenService = gardenService ?? GardenService(
+            store: GardenStore(directoryURL: directory)
+        )
         self.windowCoordinator.setHideInFullscreen(hideInFullscreen)
 
         windowCoordinator.onDisplayStateChange = { [weak self] reason, geometry in
@@ -81,9 +78,6 @@ final class AppEnvironment: ObservableObject {
         windowCoordinator.onTransitionStateChange = { [weak self] summary in
             self?.transitionSummary = summary
         }
-        windowCoordinator.onAquariumImpact = { [weak self] reducedMotion in
-            self?.onAquariumImpact?(reducedMotion)
-        }
         windowCoordinator.onProtectedTaskIDsChange = { [weak self] taskIDs in
             guard let self else { return }
             timeEngine.setProtectedTaskIDs(taskIDs)
@@ -97,8 +91,7 @@ final class AppEnvironment: ObservableObject {
         windowCoordinator.onCompleteTask = { [weak self] taskID, sourcePoint in
             guard let self else { return false }
             do {
-                _ = try await persistCompletion(id: taskID)
-                windowCoordinator.playCompletionTransition(from: sourcePoint)
+                _ = try await completeAndAnimate(id: taskID, sourcePoint: sourcePoint)
                 return true
             } catch {
                 return false
@@ -132,6 +125,13 @@ final class AppEnvironment: ObservableObject {
 
             try await seedRuinedTaskForUITestingIfNeeded()
             try await seedM4BenchmarkTasksIfNeeded()
+
+            let records = try await taskService.tasks(status: nil)
+            gardenSnapshot = try await gardenService.start(
+                taskStatuses: Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0.status) })
+            )
+            gardenServiceReady = true
+            windowCoordinator.updateGarden(gardenSnapshot)
 
             timeEngine.onExpiration = { [weak self] snapshots in
                 guard let self else { return }
@@ -225,23 +225,51 @@ final class AppEnvironment: ObservableObject {
 
     @discardableResult
     func completeTask(id: UUID) async throws -> CompletionSnapshot {
-        let snapshot = try await persistCompletion(id: id)
-        windowCoordinator.playListCompletionTransition(taskID: id)
-        return snapshot
+        let sourcePoint = windowCoordinator.completionSourceForListTask(taskID: id)
+        return try await completeAndAnimate(id: id, sourcePoint: sourcePoint)
     }
 
-    private func persistCompletion(id: UUID) async throws -> CompletionSnapshot {
+    private func completeAndAnimate(id: UUID, sourcePoint: CGPoint) async throws -> CompletionSnapshot {
+        let completedAt = Date()
+        let event: PendingGardenEvent
         do {
-            let snapshot = try await taskService.complete(id: id, at: Date())
-            AppLog.info(.store, "task_completed id=\(id.uuidString) status=completed")
-            await refreshTasks()
-            await timeEngine.reconcile(now: Date())
-            return snapshot
+            guard gardenServiceReady else { throw GardenServiceError.notStarted }
+            event = try await gardenService.prepare(
+                taskID: id,
+                completedAt: completedAt,
+                impactNormalizedX: windowCoordinator.completionImpactNormalizedX(from: sourcePoint)
+            )
         } catch {
+            taskErrorMessage = error.localizedDescription
+            AppLog.error(.store, "garden_prepare_failed id=\(id.uuidString) error=\(error.localizedDescription)")
+            throw error
+        }
+
+        let snapshot: CompletionSnapshot
+        do {
+            snapshot = try await taskService.complete(id: id, at: completedAt)
+            AppLog.info(.store, "task_completed id=\(id.uuidString) status=completed")
+        } catch {
+            try? await gardenService.cancel(taskID: id)
             taskErrorMessage = error.localizedDescription
             AppLog.error(.store, "task_complete_failed id=\(id.uuidString) error=\(error.localizedDescription)")
             throw error
         }
+
+        do {
+            let result = try await gardenService.commit(taskID: id, at: completedAt)
+            gardenSnapshot = result.snapshot
+            windowCoordinator.enqueueCompletionGardenAnimation(
+                from: sourcePoint,
+                event: event,
+                result: result
+            )
+        } catch {
+            AppLog.error(.store, "garden_commit_deferred id=\(id.uuidString) error=\(error.localizedDescription)")
+        }
+        await refreshTasks()
+        await timeEngine.reconcile(now: Date())
+        return snapshot
     }
 
     func cancelTask(id: UUID) async throws {
@@ -273,6 +301,10 @@ final class AppEnvironment: ObservableObject {
     func clearAllTasks() async throws {
         do {
             try await taskService.clearAll()
+            if gardenServiceReady {
+                gardenSnapshot = try await gardenService.clearAll()
+                windowCoordinator.updateGarden(gardenSnapshot)
+            }
             AppLog.info(.store, "all_tasks_cleared")
             await refreshTasks()
             await timeEngine.reconcile(now: Date())
@@ -361,6 +393,7 @@ final class AppEnvironment: ObservableObject {
     }
 
     var ruinedCount: Int { ruinedTasks.count }
+    var gardenCoveragePercent: Int { Int((gardenSnapshot.coverageFraction * 100).rounded()) }
 
     func requestQuickCapture() {
         onRequestQuickCapture?()
@@ -396,17 +429,4 @@ final class AppEnvironment: ObservableObject {
         windowCoordinator.playListTransition()
     }
 
-    func requestToggleAquarium() {
-        onRequestToggleAquarium?()
-    }
-
-    func requestToggleAquariumAdjustment() {
-        onRequestToggleAquariumAdjustment?()
-    }
-
-    func updateAquariumState(frame: CGRect?, isVisible: Bool, isAdjusting: Bool) {
-        aquariumIsVisible = isVisible
-        aquariumIsAdjusting = isAdjusting
-        windowCoordinator.updateAquarium(frame: frame, isVisible: isVisible)
-    }
 }

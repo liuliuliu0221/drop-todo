@@ -70,7 +70,7 @@ struct ContentView: View {
                 transitionDebug
 #endif
 
-                Text("M2C 已接入刘海与列表完成动画、正式鱼缸和位置持久化。")
+                Text("M5 正在接入完成坠落、水花与屏幕底部花园。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -88,7 +88,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("水滴待办")
                     .font(.title2.bold())
-                Text("M2C · 完成动画与鱼缸")
+                Text("M5 · 完成花园")
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -166,12 +166,12 @@ struct ContentView: View {
                 }
 
                 HStack {
-                    Button("刘海点 → 鱼缸") { environment.playNotchTransition() }
+                    Button("刘海点 → 屏幕底边") { environment.playNotchTransition() }
                         .accessibilityIdentifier("transition.notch")
-                    Button("列表行 → 鱼缸") { environment.playListTransition() }
+                    Button("列表行 → 屏幕底边") { environment.playListTransition() }
                         .accessibilityIdentifier("transition.list")
                     Spacer()
-                    Label("不抢焦点、全程点击穿透", systemImage: "cursorarrow.slash")
+                    Label("坠向屏幕底边、不抢焦点", systemImage: "cursorarrow.slash")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

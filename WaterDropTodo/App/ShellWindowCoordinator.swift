@@ -7,7 +7,6 @@ import SwiftUI
 final class ShellWindowCoordinator: NSObject, NSMenuDelegate, NSWindowDelegate {
     static let onboardingKey = "hasCompletedM1Welcome"
     private static let installedDefaultShortcutKey = "hasInstalledDefaultQuickCaptureShortcut"
-    private static let aquariumVisibleKey = "aquarium.isVisible"
 
     private let environment: AppEnvironment
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -15,9 +14,6 @@ final class ShellWindowCoordinator: NSObject, NSMenuDelegate, NSWindowDelegate {
     private var mainWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var quickCapturePanel: QuickCapturePanel?
-    private var aquariumPanel: AquariumPanel?
-    private let aquariumPlacementStore = AquariumPlacementStore()
-    private var aquariumIsAdjusting = false
     private var cancellables: Set<AnyCancellable> = []
 
     init(environment: AppEnvironment) {
@@ -31,14 +27,6 @@ final class ShellWindowCoordinator: NSObject, NSMenuDelegate, NSWindowDelegate {
         configureEnvironmentCallbacks()
         configureShortcut()
         observeTaskSummary()
-        installAquariumObservers()
-        UserDefaults.standard.register(defaults: [Self.aquariumVisibleKey: true])
-        if UserDefaults.standard.bool(forKey: Self.aquariumVisibleKey) {
-            showAquarium()
-        } else {
-            environment.updateAquariumState(frame: nil, isVisible: false, isAdjusting: false)
-        }
-
         let arguments = ProcessInfo.processInfo.arguments
         let isUITesting = arguments.contains("--ui-testing")
         let isM4Benchmark = arguments.contains { $0.hasPrefix("--m4-benchmark-") }
@@ -59,16 +47,6 @@ final class ShellWindowCoordinator: NSObject, NSMenuDelegate, NSWindowDelegate {
         } else if window === settingsWindow {
             settingsWindow = nil
         }
-    }
-
-    func windowDidMove(_ notification: Notification) {
-        guard let panel = notification.object as? AquariumPanel,
-              panel === aquariumPanel else { return }
-        environment.updateAquariumState(
-            frame: panel.frame,
-            isVisible: panel.isVisible,
-            isAdjusting: aquariumIsAdjusting
-        )
     }
 
     @objc func showQuickCapture() {
@@ -108,57 +86,8 @@ final class ShellWindowCoordinator: NSObject, NSMenuDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc func toggleAquarium() {
-        if aquariumPanel?.isVisible == true {
-            finishAquariumAdjustmentIfNeeded()
-            aquariumPanel?.hideAquarium()
-            UserDefaults.standard.set(false, forKey: Self.aquariumVisibleKey)
-            environment.updateAquariumState(frame: aquariumPanel?.frame, isVisible: false, isAdjusting: false)
-        } else {
-            UserDefaults.standard.set(true, forKey: Self.aquariumVisibleKey)
-            showAquarium()
-        }
-        rebuildStatusMenu()
-    }
-
-    @objc func toggleAquariumAdjustment() {
-        guard let panel = aquariumPanel, panel.isVisible else { return }
-        aquariumIsAdjusting.toggle()
-        panel.setAdjustmentMode(aquariumIsAdjusting)
-        if !aquariumIsAdjusting, let screen = panel.screen ?? NSScreen.main {
-            aquariumPlacementStore.save(frame: panel.frame, on: screen)
-        }
-        environment.updateAquariumState(
-            frame: panel.frame,
-            isVisible: true,
-            isAdjusting: aquariumIsAdjusting
-        )
-        rebuildStatusMenu()
-    }
-
     @objc func terminateApplication() {
         NSApp.terminate(nil)
-    }
-
-    @objc private func handleScreensSleep(_ notification: Notification) {
-        aquariumPanel?.pauseAnimation()
-    }
-
-    @objc private func handleScreensWake(_ notification: Notification) {
-        aquariumPanel?.resumeAnimation()
-    }
-
-    @objc private func handleScreenConfigurationChange(_ notification: Notification) {
-        guard let panel = aquariumPanel,
-              let screen = NSScreen.main else { return }
-        let frame = aquariumPlacementStore.frame(for: screen)
-        panel.setFrame(AquariumPlacementGeometry.clamped(frame, to: screen.visibleFrame), display: true)
-        if panel.isVisible { panel.showAquarium() }
-        environment.updateAquariumState(
-            frame: panel.frame,
-            isVisible: panel.isVisible,
-            isAdjusting: aquariumIsAdjusting
-        )
     }
 
     private func configureStatusItem() {
@@ -180,15 +109,6 @@ final class ShellWindowCoordinator: NSObject, NSMenuDelegate, NSWindowDelegate {
         environment.onRequestSettings = { [weak self] in
             self?.showSettings()
         }
-        environment.onRequestToggleAquarium = { [weak self] in
-            self?.toggleAquarium()
-        }
-        environment.onRequestToggleAquariumAdjustment = { [weak self] in
-            self?.toggleAquariumAdjustment()
-        }
-        environment.onAquariumImpact = { [weak self] reducedMotion in
-            self?.aquariumPanel?.triggerImpact(reducedMotion: reducedMotion)
-        }
     }
 
     private func configureShortcut() {
@@ -205,27 +125,6 @@ final class ShellWindowCoordinator: NSObject, NSMenuDelegate, NSWindowDelegate {
             let requestedAt = ProcessInfo.processInfo.systemUptime
             Task { @MainActor in self?.presentQuickCapture(requestedAt: requestedAt) }
         }
-    }
-
-    private func installAquariumObservers() {
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(handleScreensSleep),
-            name: NSWorkspace.screensDidSleepNotification,
-            object: nil
-        )
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(handleScreensWake),
-            name: NSWorkspace.screensDidWakeNotification,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleScreenConfigurationChange),
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil
-        )
     }
 
     private func observeTaskSummary() {
@@ -276,13 +175,6 @@ final class ShellWindowCoordinator: NSObject, NSMenuDelegate, NSWindowDelegate {
         statusMenu.addItem(createItem)
         statusMenu.addItem(menuItem("打开主窗口", action: #selector(showMainWindow)))
 
-        let aquariumItem = menuItem("显示鱼缸", action: #selector(toggleAquarium))
-        aquariumItem.state = aquariumPanel?.isVisible == true ? .on : .off
-        statusMenu.addItem(aquariumItem)
-        let adjustmentTitle = aquariumIsAdjusting ? "完成调整鱼缸位置" : "调整鱼缸位置"
-        let adjustmentItem = menuItem(adjustmentTitle, action: #selector(toggleAquariumAdjustment))
-        adjustmentItem.isEnabled = aquariumPanel?.isVisible == true
-        statusMenu.addItem(adjustmentItem)
         statusMenu.addItem(menuItem("设置…", action: #selector(showSettings)))
         statusMenu.addItem(.separator())
         statusMenu.addItem(menuItem("退出水滴待办", action: #selector(terminateApplication)))
@@ -349,40 +241,6 @@ final class ShellWindowCoordinator: NSObject, NSMenuDelegate, NSWindowDelegate {
         return panel
     }
 
-    private func showAquarium() {
-        let panel = aquariumPanel ?? makeAquariumPanel()
-        guard let screen = NSScreen.main else {
-            panel.center()
-            panel.showAquarium()
-            return
-        }
-        if aquariumPanel == nil {
-            panel.setFrame(aquariumPlacementStore.frame(for: screen), display: true)
-        }
-        aquariumIsAdjusting = false
-        panel.setAdjustmentMode(false)
-        panel.showAquarium()
-        environment.updateAquariumState(frame: panel.frame, isVisible: true, isAdjusting: false)
-    }
-
-    private func makeAquariumPanel() -> AquariumPanel {
-        let screen = NSScreen.main
-        let frame = screen.map(aquariumPlacementStore.frame(for:))
-            ?? CGRect(origin: .zero, size: AquariumPlacementGeometry.panelSize)
-        let panel = AquariumPanel(frame: frame)
-        panel.delegate = self
-        aquariumPanel = panel
-        return panel
-    }
-
-    private func finishAquariumAdjustmentIfNeeded() {
-        guard aquariumIsAdjusting, let panel = aquariumPanel else { return }
-        aquariumIsAdjusting = false
-        panel.setAdjustmentMode(false)
-        if let screen = panel.screen ?? NSScreen.main {
-            aquariumPlacementStore.save(frame: panel.frame, on: screen)
-        }
-    }
 }
 
 private final class QuickCapturePanel: NSPanel {

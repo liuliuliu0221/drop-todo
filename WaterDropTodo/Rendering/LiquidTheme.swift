@@ -23,7 +23,7 @@ struct LiquidTheme: Sendable, Equatable {
         radius: 0.065,
         mediumDensityRadius: 0.057,
         highDensityRadius: 0.050,
-        hoverScale: 2.00,
+        hoverScale: 1.25,
         lowImportanceHalfLength: 0.028,
         mediumImportanceHalfLength: 0.0505,
         highImportanceHalfLength: 0.070,

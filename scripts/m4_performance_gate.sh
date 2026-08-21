@@ -129,7 +129,7 @@ cat > "$result_dir/summary.md" <<EOF
 - CPU P95：${p95_cpu}%
 - 峰值 RSS：$((peak_rss_kb / 1024)) MB
 - RSS 首尾变化：$((growth_rss_kb / 1024)) MB
-- 基准任务：8 个 active，鱼缸保持显示
+- 基准任务：8 个 active，花园覆盖层保持空闲
 - 能耗采样：macOS 不支持 Power Profiler，使用 Activity Monitor trace 记录替代指标
 EOF
 

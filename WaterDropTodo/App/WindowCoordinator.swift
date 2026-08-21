@@ -1,5 +1,11 @@
 import AppKit
 
+private struct QueuedCompletionGardenAnimation {
+    let request: CompletionGardenAnimationRequest
+    let snapshot: GardenSnapshot
+    let changedCellIndices: Set<Int>
+}
+
 @MainActor
 final class WindowCoordinator: NSObject {
     typealias DisplayStateHandler = (NotchVisibilityReason, NotchGeometry?) -> Void
@@ -11,7 +17,6 @@ final class WindowCoordinator: NSObject {
     var onTransitionStateChange: TransitionStateHandler?
     var onProtectedTaskIDsChange: ProtectionHandler?
     var onCompleteTask: CompletionHandler?
-    var onAquariumImpact: ((Bool) -> Void)?
 
     private let displayPolicy: DisplayPolicy
     private let renderPanel: NotchRenderPanel
@@ -19,14 +24,14 @@ final class WindowCoordinator: NSObject {
     private let layoutEngine = NotchLayoutEngine()
     private let transitionPanel = TransitionOverlayPanel()
     private let expirationPanel = ExpirationOverlayPanel()
+    private let completionFallPanel = CompletionFallOverlayPanel()
+    private let gardenPanel = GardenOverlayPanel()
     private let hoverCardPanel = HoverCardPanel()
     private let hoverCorridorPanel = HoverCorridorPanel()
     private var currentGeometry: NotchGeometry?
     private var currentLayout = NotchLayoutSnapshot.empty(at: .distantPast, contentWidth: 177)
     private var activeTasks: [TaskRecord] = []
     private var taskRowFrames: [UUID: CGRect] = [:]
-    private var aquariumFrame: CGRect?
-    private var aquariumIsVisible = false
     private var hoveredTaskID: UUID?
     private var hoveredHitTargetIDs: Set<UUID> = []
     private var currentHitTargets: [UUID: DropletHitTarget] = [:]
@@ -44,6 +49,9 @@ final class WindowCoordinator: NSObject {
     private var globalKeyMonitor: Any?
     private var layoutTimer: Timer?
     private var listSourceFrame: CGRect?
+    private var gardenSnapshot = GardenSnapshot.empty
+    private var completionAnimationQueue: [QueuedCompletionGardenAnimation] = []
+    private var isPlayingCompletionAnimation = false
     private var isObserving = false
     private var hideInFullscreen = true
 
@@ -84,12 +92,14 @@ final class WindowCoordinator: NSObject {
             closeCardSession()
             renderPanel.hide()
             hitTestCoordinator.hideAll()
+            gardenPanel.hideGarden()
             onDisplayStateChange?(reason, nil)
             return reason
         }
 
         currentGeometry = geometry
         renderPanel.show(geometry: geometry)
+        refreshGardenPanel()
         updateLayout(now: Date())
         startLayoutUpdatesIfNeeded()
         onDisplayStateChange?(reason, geometry)
@@ -117,11 +127,6 @@ final class WindowCoordinator: NSObject {
         taskRowFrames[taskID] = frame
     }
 
-    func updateAquarium(frame: CGRect?, isVisible: Bool) {
-        aquariumFrame = frame
-        aquariumIsVisible = isVisible
-    }
-
     func setHideInFullscreen(_ enabled: Bool) {
         hideInFullscreen = enabled
         if isObserving { refresh() }
@@ -147,16 +152,49 @@ final class WindowCoordinator: NSObject {
         )
     }
 
-    func playCompletionTransition(from point: CGPoint) {
-        playTransition(from: point, source: .notch)
+    func completionImpactNormalizedX(from source: CGPoint) -> Double {
+        guard let screen = screen(containing: source) ?? NSScreen.main else { return 0.5 }
+        let screenFrame = screen.frame
+        guard screenFrame.width > 0 else { return 0.5 }
+        return Double(min(max((source.x - screenFrame.minX) / screenFrame.width, 0), 1))
     }
 
-    func playListCompletionTransition(taskID: UUID) {
-        guard let frame = taskRowFrames[taskID], !frame.isEmpty else {
-            onTransitionStateChange?("列表任务已完成；来源坐标不可用，跳过飞行动画。")
-            return
+    func completionSourceForListTask(taskID: UUID) -> CGPoint {
+        if let frame = taskRowFrames[taskID], !frame.isEmpty {
+            return CGPoint(x: frame.midX, y: frame.midY)
         }
-        playTransition(from: CGPoint(x: frame.midX, y: frame.midY), source: .listRow)
+        if let geometry = currentGeometry {
+            return CGPoint(x: geometry.notchFrame.midX, y: geometry.notchFrame.minY - 18)
+        }
+        guard let visibleFrame = NSScreen.main?.visibleFrame else { return .zero }
+        return CGPoint(x: visibleFrame.midX, y: visibleFrame.maxY - 24)
+    }
+
+    func enqueueCompletionGardenAnimation(
+        from source: CGPoint,
+        event: PendingGardenEvent,
+        result: GardenCommitResult
+    ) {
+        gardenSnapshot = result.snapshot
+        completionAnimationQueue.append(
+            QueuedCompletionGardenAnimation(
+                request: CompletionGardenAnimationRequest(
+                    taskID: event.taskID,
+                    source: source,
+                    impactNormalizedX: event.impactNormalizedX,
+                    landingPositions: result.landingPositions,
+                    randomSeed: event.randomSeed
+                ),
+                snapshot: result.snapshot,
+                changedCellIndices: result.changedCellIndices
+            )
+        )
+        playNextCompletionAnimationIfNeeded()
+    }
+
+    func updateGarden(_ snapshot: GardenSnapshot) {
+        gardenSnapshot = snapshot
+        refreshGardenPanel()
     }
 
     func playExpirationTransitions(_ snapshots: [ExpirationSnapshot]) {
@@ -238,6 +276,7 @@ final class WindowCoordinator: NSObject {
     @objc private func handleDisplayChange(_ notification: Notification) {
         transitionPanel.cancel()
         expirationPanel.cancel()
+        cancelCompletionAnimations()
         onTransitionStateChange?("屏幕配置变化，跨窗口动画已安全取消。")
         refresh()
     }
@@ -249,7 +288,72 @@ final class WindowCoordinator: NSObject {
         hitTestCoordinator.hideAll()
         transitionPanel.cancel()
         expirationPanel.cancel()
+        cancelCompletionAnimations()
+        gardenPanel.hideGarden()
         onTransitionStateChange?("屏幕休眠，跨窗口动画已安全取消。")
+    }
+
+    private func playNextCompletionAnimationIfNeeded() {
+        guard !isPlayingCompletionAnimation, !completionAnimationQueue.isEmpty else { return }
+        let queued = completionAnimationQueue.removeFirst()
+        guard currentGeometry != nil,
+              NSScreen.screens.count == 1,
+              let screen = screen(containing: queued.request.source) ?? NSScreen.main else {
+            guard let fallbackScreen = NSScreen.main ?? NSScreen.screens.first else { return }
+            if currentGeometry != nil {
+                gardenPanel.show(
+                    snapshot: queued.snapshot,
+                    on: fallbackScreen,
+                    changedCellIndices: queued.changedCellIndices,
+                    reducedMotion: true
+                )
+            }
+            playNextCompletionAnimationIfNeeded()
+            return
+        }
+
+        isPlayingCompletionAnimation = true
+        let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        onTransitionStateChange?("正在播放：完成水滴 → 屏幕底边花园")
+        completionFallPanel.animate(
+            request: queued.request,
+            on: screen,
+            reducedMotion: reducedMotion
+        ) { [weak self] in
+            guard let self else { return }
+            gardenPanel.show(
+                snapshot: queued.snapshot,
+                on: screen,
+                changedCellIndices: queued.changedCellIndices,
+                reducedMotion: reducedMotion
+            )
+            isPlayingCompletionAnimation = false
+            onTransitionStateChange?(
+                "完成：水花落点 \(queued.request.landingPositions.count) 个，花园覆盖 \(Int(queued.snapshot.coverageFraction * 100))%"
+            )
+            playNextCompletionAnimationIfNeeded()
+        }
+    }
+
+    private func cancelCompletionAnimations() {
+        completionFallPanel.cancel()
+        completionAnimationQueue.removeAll()
+        isPlayingCompletionAnimation = false
+        refreshGardenPanel()
+    }
+
+    private func refreshGardenPanel() {
+        guard currentGeometry != nil,
+              NSScreen.screens.count == 1,
+              let screen = NSScreen.screens.first else {
+            gardenPanel.hideGarden()
+            return
+        }
+        gardenPanel.show(snapshot: gardenSnapshot, on: screen, reducedMotion: true)
+    }
+
+    private func screen(containing point: CGPoint) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.contains(point) }
     }
 
     private func playTransition(from start: CGPoint, source: TransitionSourceKind) {
@@ -260,15 +364,13 @@ final class WindowCoordinator: NSObject {
         }
 
         let overlayFrame = screens.map(\.frame).reduce(CGRect.null) { $0.union($1) }
-        let target = aquariumFrame.map {
-            CGPoint(x: $0.midX, y: $0.minY + $0.height * 0.68)
-        } ?? start
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let mode = TransitionAnimationPolicy.mode(
-            aquariumIsVisible: aquariumIsVisible && aquariumFrame != nil,
-            reduceMotion: reduceMotion
+        let target = CGPoint(
+            x: min(max(start.x, screen.frame.minX + 12), screen.frame.maxX - 12),
+            y: screen.frame.minY + 2
         )
-        let destination = mode == .travel ? "鱼缸" : "源位置淡出"
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let mode = TransitionAnimationPolicy.mode(reduceMotion: reduceMotion)
+        let destination = mode == .travel ? "屏幕下边缘" : "源位置淡出"
         onTransitionStateChange?("正在播放：\(source.rawValue) → \(destination)")
         transitionPanel.animate(
             screenRoute: TransitionRoute(start: start, target: target),
@@ -278,9 +380,6 @@ final class WindowCoordinator: NSObject {
             mode: mode,
             duration: mode == .travel ? 0.8 : 0.25
         ) { [weak self] metrics in
-            if self?.aquariumIsVisible == true {
-                self?.onAquariumImpact?(mode == .fadeAtSource)
-            }
             self?.onTransitionStateChange?(
                 "完成：\(metrics.source.rawValue)，scale=\(String(format: "%.1f", metrics.backingScale))，落点误差=\(String(format: "%.3f", metrics.endpointError))pt"
             )

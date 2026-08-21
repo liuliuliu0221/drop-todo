@@ -44,4 +44,9 @@ struct TransitionGeometryTests {
 
         #expect(error <= 0.36)
     }
+
+    @Test func transitionPolicyUsesReducedMotionFallback() {
+        #expect(TransitionAnimationPolicy.mode(reduceMotion: false) == .travel)
+        #expect(TransitionAnimationPolicy.mode(reduceMotion: true) == .fadeAtSource)
+    }
 }

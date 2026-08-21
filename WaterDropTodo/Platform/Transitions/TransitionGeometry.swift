@@ -11,8 +11,8 @@ enum TransitionAnimationMode: Sendable, Equatable {
 }
 
 struct TransitionAnimationPolicy: Sendable {
-    static func mode(aquariumIsVisible: Bool, reduceMotion: Bool) -> TransitionAnimationMode {
-        aquariumIsVisible && !reduceMotion ? .travel : .fadeAtSource
+    static func mode(reduceMotion: Bool) -> TransitionAnimationMode {
+        reduceMotion ? .fadeAtSource : .travel
     }
 }
 

@@ -22,7 +22,7 @@ final class WaterDropTodoUITests: XCTestCase {
     }
 
     @MainActor
-    func testListRowTransitionReachesAquariumTarget() throws {
+    func testListRowTransitionReachesScreenBottom() throws {
 #if DEBUG
         let app = launchApp()
 
@@ -154,6 +154,26 @@ final class WaterDropTodoUITests: XCTestCase {
         XCTAssertTrue(confirmClear.waitForExistence(timeout: 2))
         confirmClear.tap()
         XCTAssertTrue(app.staticTexts["编辑后任务"].waitForNonExistence(timeout: 3))
+    }
+
+    @MainActor
+    func testCompletionBuildsGardenAndClearingHistoryKeepsIt() throws {
+        let app = launchApp()
+        createTask(named: "种下一片草", in: app)
+
+        app.buttons["完成"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["种下一片草"].waitForNonExistence(timeout: 3))
+        app.radioButtons["已完成"].tap()
+        app.buttons["tasks.clearCompleted"].tap()
+        XCTAssertTrue(app.buttons["tasks.confirmClearCompleted"].waitForExistence(timeout: 2))
+        app.buttons["tasks.confirmClearCompleted"].tap()
+
+        app.buttons["设置"].tap()
+        let gardenTotal = app.descendants(matching: .any)["settings.garden.total"]
+        XCTAssertTrue(gardenTotal.waitForExistence(timeout: 3))
+        XCTAssertEqual(gardenTotal.label, "花园完成积累 1")
+        XCTAssertFalse(app.buttons["settings.aquarium.toggle"].exists)
+        XCTAssertFalse(app.buttons["settings.aquarium.adjust"].exists)
     }
 
     @MainActor

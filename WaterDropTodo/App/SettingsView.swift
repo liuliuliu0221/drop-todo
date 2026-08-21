@@ -49,29 +49,18 @@ struct SettingsView: View {
                 }
             }
 
-            Section("鱼缸") {
-                LabeledContent("当前状态", value: environment.aquariumIsVisible ? "显示" : "隐藏")
-                HStack {
-                    Button(environment.aquariumIsVisible ? "隐藏鱼缸" : "显示鱼缸") {
-                        environment.requestToggleAquarium()
-                    }
-                    .accessibilityIdentifier("settings.aquarium.toggle")
-
-                    Button(environment.aquariumIsAdjusting ? "完成调整" : "调整位置") {
-                        environment.requestToggleAquariumAdjustment()
-                    }
-                    .disabled(!environment.aquariumIsVisible)
-                    .accessibilityIdentifier("settings.aquarium.adjust")
-                }
-                Text("正常状态点击穿透；进入调整模式后可拖动鱼缸，完成时自动保存位置。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("数据与诊断") {
                 LabeledContent("进行中", value: "\(environment.activeTasks.count)")
                 LabeledContent("已完成", value: "\(environment.completedTasks.count)")
                 LabeledContent("废墟", value: "\(environment.ruinedCount)")
+                LabeledContent("花园完成积累", value: "\(environment.gardenSnapshot.totalCompletions)")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("花园完成积累 \(environment.gardenSnapshot.totalCompletions)")
+                    .accessibilityIdentifier("settings.garden.total")
+                LabeledContent("底边草地覆盖", value: "\(environment.gardenCoveragePercent)%")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("底边草地覆盖 \(environment.gardenCoveragePercent)%")
+                    .accessibilityIdentifier("settings.garden.coverage")
                 HStack {
                     Button("导出任务 JSON") {
                         runDataAction { try await environment.exportTasksJSON() }

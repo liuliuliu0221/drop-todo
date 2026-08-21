@@ -268,7 +268,7 @@ struct NotchLayoutTests {
         #expect(theme.radius(forDropletCount: 5) == 0.057)
         #expect(theme.radius(forDropletCount: 6) == 0.050)
         #expect(theme.radius(forDropletCount: 8) == 0.050)
-        #expect(theme.hoverScale == 2.00)
+        #expect(theme.hoverScale == 1.25)
         #expect(theme.halfLength(for: .low) == 0.028)
         #expect(theme.halfLength(for: .medium) == 0.0505)
         #expect(theme.halfLength(for: .high) == 0.070)

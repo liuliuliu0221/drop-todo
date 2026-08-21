@@ -34,7 +34,7 @@ else
     xcodebuild "${common[@]}" \
         -enableAddressSanitizer YES \
         -only-testing:WaterDropTodoUITests/WaterDropTodoUITests/testExample \
-        -only-testing:WaterDropTodoUITests/WaterDropTodoUITests/testListRowTransitionReachesAquariumTarget \
+        -only-testing:WaterDropTodoUITests/WaterDropTodoUITests/testListRowTransitionReachesScreenBottom \
         test | tee "$result_dir/address-sanitizer.log"
 fi
 

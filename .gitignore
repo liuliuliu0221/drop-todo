@@ -1,0 +1,23 @@
+# Xcode per-user state
+xcuserdata/
+*.xcuserstate
+
+# Build and test outputs
+DerivedData/
+build/
+.m4-results/
+*.xcresult
+*.dSYM
+*.dmg
+*.profraw
+
+# Signing and notarization material must never enter source control
+*.p12
+*.cer
+*.provisionprofile
+*.keychain
+*.keychain-db
+.notarytool-profile
+
+# macOS metadata
+.DS_Store
